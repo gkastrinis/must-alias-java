@@ -1,0 +1,122 @@
+OptCallGraphEdge(?toMethod, ?invocation) ->
+  Method(?toMethod), MethodInvocation(?invocation).
+OptCallGraphEdge(?toMethod, ?invocation) <-
+  CallGraphEdge(_, ?invocation, _, ?toMethod).
+
+OptResolvedCall(?instruction, ?callee),
+ResolvedCall:FromTo(?caller, ?callee) <-
+  ResolvedCall(?callee, ?instruction),
+  Instruction:Method[?instruction] = ?caller.
+
+
+// TODO: maybe include this in Doop facts
+Return:Reference(?instruction) <-
+  ReturnNonvoid:Var[?instruction] = ?var,
+  ReferenceType(Var:Type[?var]).
+
+Return:NonReference(?instruction) <-
+  ReturnNonvoid:Var[?instruction] = ?var,
+  !ReferenceType(Var:Type[?var]).
+
+Return:NonReference(?instruction) <-
+  ReturnVoid:Insn(?instruction).
+
+_SingleReturnInstruction(?returnInstr) <-
+  ReturnInstruction(?returnInstr),
+  !ExistsPreviousReturn(?returnInstr),
+  !NextReturn[?returnInstr] = _.
+
+// Copied from may-pre-analysis - START
+//ContextInsensVPTModNull(?heap, ?var) <-
+//   VarPointsTo(_, ?heap, _, ?var), ?heap != HeapAllocation:Null[].
+//
+//VPTTypeForVarModNull(?type, ?var) <-
+//   ContextInsensVPTModNull(?heap, ?var),
+//   HeapAllocation:Type[?heap] = ?type,
+//   !NullType(?type).
+//
+//NumTypesForVar[?var] = ?total <-
+//   agg<<?total = count()>>(VPTTypeForVarModNull(_,?var)).
+//
+//TypeResolvedVar(?var) <-
+//   NumTypesForVar[?var] = 1.
+// Copied from may-pre-analysis - END
+
+
+RootMethod(?meth) <-
+  Method:DeclaringType[?meth] = ?class,
+  ApplicationClass(?class),
+  Reachable(?meth).
+
+ResolvedCall(?toMethod, ?invocation) <-
+  TypeResolvedVar(?base),
+  OptVirtualMethodInvocationBase(?invocation, ?base),
+  OptCallGraphEdge(?toMethod, ?invocation).
+
+ResolvedCall(?toMethod, ?invocation) <-
+  StaticMethodInvocation(?invocation, ?toMethod, _),
+  OptCallGraphEdge(?toMethod, ?invocation). // only keep reachable
+ResolvedCall(?toMethod, ?invocation) <-
+  SpecialMethodInvocation:Insn(?invocation),
+  MethodInvocation:Signature[?invocation] = ?toMethod,
+  OptCallGraphEdge(?toMethod, ?invocation). // only keep reachable
+
+UnresolvedCall(?invocation) <-
+  MethodInvocation(?invocation),
+  !ResolvedCall(_, ?invocation).
+
+FirstInstructionInMethod(?instruction, ?method) <-
+  Instruction:Method[?instruction] = ?method,
+  !Instruction:Prev[?instruction] = _.
+
+AssignHeapAllocationVar(?var, ?inMethod) <-
+  AssignNormalHeapAllocation(_, ?var, ?inMethod) ;
+  AssignContextInsensitiveHeapAllocation(_, ?var, ?inMethod).
+
+
+ActualToFormalArg(?actual, ?invocation, ?formal) <-
+  ActualParam[?index, ?invocation] = ?actual,
+  ResolvedCall(?toMethod, ?invocation),
+  FormalParam[?index, ?toMethod] = ?formal,
+  ReferenceType(Var:Type[?formal]).
+
+ActualToFormalArg(?base, ?invocation, ?this) <-
+  (OptVirtualMethodInvocationBase(?invocation, ?base) ;
+   OptSpecialMethodInvocationBase(?invocation, ?base)),
+  ResolvedCall(?toMethod, ?invocation),
+  ThisVar[?toMethod] = ?this.
+
+
+_Return:Ret[?instruction] = ?ret ->
+  Instruction(?instruction), string(?ret).
+
+_Return:Ret[?instruction] = ?ret <-
+  _SingleReturnInstruction(?instruction),
+  ReturnNonvoid:Var[?instruction] = ?ret,
+  Return:Reference(?instruction).
+
+_Return:Ret[?instruction] = "@nil" <-
+  _SingleReturnInstruction(?instruction),
+  Return:NonReference(?instruction).
+
+_Return:ToInvo(?invocation, ?instruction) <-
+  _Return:Ret[?instruction] = _,
+  Instruction:Method[?instruction] = ?callee,
+  OptResolvedCall(?invocation, ?callee).
+
+_Return:AssignVar[?invocation, ?instruction] = ?var ->
+  MethodInvocation(?invocation), Instruction(?instruction), string(?var).
+
+_Return:AssignVar[?invocation, ?instruction] = ?var <-
+  _Return:Ret[?instruction] = ?ret, ?ret != "@nil",
+  _Return:ToInvo(?invocation, ?instruction),
+  AssignReturnValue[?invocation] = ?var.
+
+_Return:AssignVar[?invocation, ?instruction] = ?nil <-
+  _Return:Ret[?instruction] = ?nil, ?nil = "@nil",
+  _Return:ToInvo(?invocation, ?instruction).
+
+ReturnTo(?var, ?invocation, ?retVar, ?instruction) <-
+  _Return:Ret[?instruction] = ?retVar,
+  _Return:ToInvo(?invocation, ?instruction),
+  _Return:AssignVar[?invocation, ?instruction] = ?var.
